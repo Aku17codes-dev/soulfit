@@ -1,5 +1,5 @@
 /* ── your Google Apps Script web app ── */
-const API = "https://script.google.com/macros/s/AKfycbx4uMrFeHfO909baKb-IR33vC9y1jiAEFKGWwNdrGE87scfnUHI_x0d9F0kTI-jZTxL/exec";
+const API = "https://script.google.com/macros/s/AKfycby-axbezGbmAqmfpHqc2qS_Hp0hduLemiStd6IR8uY7VjUJAA6psZET9hrQ1ONEZ8leWw/exec";
 
 const $ = (s, r = document) => r.querySelector(s);
 const $$ = (s, r = document) => [...r.querySelectorAll(s)];
