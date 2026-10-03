@@ -1,119 +1,79 @@
-/**
- * Akhara backend. Paste over your current script, Save, then:
- * Deploy > Manage deployments > pencil > Version: New version > Deploy
- * (same URL keeps working).
- *
- * Tabs it uses (created automatically):
- *   Members     : ID | NAME | CREATED   (existing rows are kept)
- *   Attendance  : NAME | ID | IN TIME | DATE | DAY | OUT TIME | ROW KEY
- *   DayMarks    : ID | NAME | DATE | DAY | MARKED AT
- */
-var TZ = 'Asia/Kolkata', PREFIX = 'GYM-';
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Akhara — gym tracker</title>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,400..900&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="shutter"></div>
 
-function tab_(name, head) {
-  var ss = SpreadsheetApp.getActiveSpreadsheet(), t = ss.getSheetByName(name);
-  if (!t) {
-    t = ss.insertSheet(name);
-    t.appendRow(head);
-    t.getRange(1, 1, 1, head.length).setFontWeight('bold').setBackground('#191410').setFontColor('#FFFFFF');
-    t.setFrozenRows(1);
-  }
-  return t;
-}
-function out_(o) { return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
-function fmt_(d, f) { return Utilities.formatDate(d, TZ, f); }
+<section id="gate">
+  <div class="gate-in">
+    <h1 class="logo"><span>Akhara</span></h1>
+    <p class="sub">No password. Enter your member ID, type the code, and your time is stamped in the register.</p>
 
-/** Find ID and NAME columns by header text, so older sheets still work. */
-function cols_(t) {
-  var h = t.getRange(1, 1, 1, Math.max(t.getLastColumn(), 2)).getValues()[0].map(function (x) { return String(x).toLowerCase(); });
-  var id = 0, nm = 1;
-  h.forEach(function (x, i) { if (x.indexOf('id') > -1 && x.indexOf('name') < 0) id = i; if (x.indexOf('name') > -1) nm = i; });
-  return { id: id, nm: nm };
-}
-function member_(id) {
-  var t = tab_('Members', ['ID', 'NAME', 'CREATED']);
-  if (t.getLastRow() < 2) return null;
-  var c = cols_(t), v = t.getRange(2, 1, t.getLastRow() - 1, t.getLastColumn()).getValues();
-  for (var i = 0; i < v.length; i++) {
-    if (String(v[i][c.id]).trim().toUpperCase() === id) return { id: id, name: String(v[i][c.nm]) };
-  }
-  return null;
-}
-function attRow_(t, rowKey) {
-  if (!rowKey || t.getLastRow() < 2) return -1;
-  var k = t.getRange(2, 7, t.getLastRow() - 1, 1).getValues();
-  for (var i = k.length - 1; i >= 0; i--) if (String(k[i][0]) === String(rowKey)) return i + 2;
-  return -1;
-}
-function marks_(id) {
-  var t = tab_('DayMarks', ['ID', 'NAME', 'DATE', 'DAY', 'MARKED AT']), n = 0, max = 0;
-  if (t.getLastRow() > 1) t.getRange(2, 1, t.getLastRow() - 1, 4).getValues().forEach(function (r) {
-    if (String(r[0]) === id) { n++; max = Math.max(max, Number(r[3]) || 0); }
-  });
-  return { count: n, next: max + 1 };
-}
+    <label for="mid">Member ID</label>
+    <input class="blank" id="mid" placeholder="GYM-0000" maxlength="12" autocomplete="off">
 
-function doGet() { return out_({ ok: true, message: 'Akhara is live' }); }
+    <label for="cap">Type the code you see</label>
+    <div class="caprow">
+      <svg id="capsvg" viewBox="0 0 172 62"></svg>
+      <button id="capReload" type="button" aria-label="New code">↻</button>
+      <input id="cap" placeholder="CODE" maxlength="5" autocomplete="off">
+    </div>
 
-function doPost(e) {
-  var p;
-  try { p = JSON.parse(e.postData.contents); } catch (err) { return out_({ ok: false, error: 'Bad request' }); }
-  var lock = LockService.getScriptLock(); lock.waitLock(20000);
-  try {
-    var id = String(p.id || '').trim().toUpperCase(), now = new Date();
+    <button class="btn wide" id="signin">Sign in</button>
+    <p class="err" id="gateErr" role="alert"></p>
+    <p class="tiny">New here? <button class="link" id="newId">Generate a member ID</button></p>
+    <div id="ticket" class="ticket"></div>
+  </div>
+</section>
 
-    if (p.action === 'register') {
-      var name = String(p.name || '').trim().slice(0, 28);
-      if (name.length < 2) return out_({ ok: false, error: 'Enter a name' });
-      var chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789', nid;
-      do { nid = PREFIX; for (var i = 0; i < 4; i++) nid += chars.charAt(Math.floor(Math.random() * chars.length)); } while (member_(nid));
-      tab_('Members', ['ID', 'NAME', 'CREATED']).appendRow([nid, name, fmt_(now, 'dd MMM yyyy hh:mm a')]);
-      return out_({ ok: true, id: nid, name: name });
-    }
+<div id="app" hidden>
+  <header><b class="brand">AK<i>H</i>ARA</b><span id="who"></span></header>
+  <nav id="tabs">
+    <button data-v="mark">Day marker</button>
+    <button data-v="week">Week plan</button>
+    <button data-v="diet">Diet</button>
+    <button data-v="out">Sign out</button>
+  </nav>
 
-    if (p.action === 'login') {
-      var m = member_(id);
-      if (!m) return out_({ ok: false, error: 'No member with that ID' });
-      var t = tab_('Attendance', ['NAME', 'ID', 'IN TIME', 'DATE', 'DAY', 'OUT TIME', 'ROW KEY']);
-      var key = id + '-' + now.getTime();
-      t.getRange(t.getLastRow() + 1, 1, 1, 7).setNumberFormat('@')
-        .setValues([[m.name, id, fmt_(now, 'hh:mm a'), fmt_(now, 'dd MMM yyyy'), '', '', key]]);
-      t.getRange(t.getLastRow(), 6).setBackground('#FCF0C8');
-      var s = marks_(id);
-      return out_({ ok: true, id: id, name: m.name, rowKey: key, count: s.count, next: s.next });
-    }
+  <main>
+    <section class="view" id="v-mark">
+      <h2>Mark today</h2>
+      <div class="card">
+        <label for="mdate">Date</label><input type="date" id="mdate">
+        <label for="mday">Day number</label><input type="number" id="mday" min="1" max="365">
+        <button class="btn wide" id="markBtn">Mark this day done</button>
+        <p class="err" id="markErr"></p>
+      </div>
+      <p class="tiny" id="count"></p>
+    </section>
 
-    if (p.action === 'mark') {
-      var mm = member_(id);
-      if (!mm) return out_({ ok: false, error: 'Unknown member' });
-      var day = Number(p.day), date = String(p.date || '');
-      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return out_({ ok: false, error: 'Bad date' });
-      if (!(day >= 1 && day <= 365)) return out_({ ok: false, error: 'Day must be 1 to 365' });
-      if (date > fmt_(now, 'yyyy-MM-dd')) return out_({ ok: false, error: 'You can\'t mark a future date' });
-      var dm = tab_('DayMarks', ['ID', 'NAME', 'DATE', 'DAY', 'MARKED AT']);
-      if (dm.getLastRow() > 1) {
-        var rows = dm.getRange(2, 1, dm.getLastRow() - 1, 3).getValues();
-        for (var j = 0; j < rows.length; j++) {
-          var d = rows[j][2] instanceof Date ? fmt_(rows[j][2], 'yyyy-MM-dd') : String(rows[j][2]).replace(/^'/, '');
-          if (String(rows[j][0]) === id && d === date) return out_({ ok: false, error: 'That date is already marked' });
-        }
-      }
-      var r0 = dm.getLastRow() + 1;
-      dm.getRange(r0, 1, 1, 5).setNumberFormat('@').setValues([[id, mm.name, date, String(day), fmt_(now, 'dd MMM yyyy hh:mm a')]]);
-      var at = tab_('Attendance', ['NAME', 'ID', 'IN TIME', 'DATE', 'DAY', 'OUT TIME', 'ROW KEY']);
-      var ar = attRow_(at, p.rowKey);
-      if (ar > 0) at.getRange(ar, 5).setValue(String(day)).setBackground('#E6F2E6').setFontWeight('bold');
-      return out_({ ok: true, count: marks_(id).count });
-    }
+    <section class="view" id="v-week"><h2>Weekly target</h2><div id="weekList"></div></section>
 
-    if (p.action === 'logout') {
-      var ot = tab_('Attendance', ['NAME', 'ID', 'IN TIME', 'DATE', 'DAY', 'OUT TIME', 'ROW KEY']);
-      var or = attRow_(ot, p.rowKey);
-      if (or < 0) return out_({ ok: false, error: 'No open session' });
-      ot.getRange(or, 6).setValue(fmt_(now, 'hh:mm a')).setBackground(null);
-      return out_({ ok: true });
-    }
+    <section class="view" id="v-diet">
+      <h2>Diet in rupees</h2>
+      <div id="plans"></div><div id="meals"></div>
+      <div class="total"><span>Per day</span><b id="tot"></b></div>
+    </section>
 
-    return out_({ ok: false, error: 'Unknown action' });
-  } finally { lock.releaseLock(); }
-}
+    <section class="view" id="v-out">
+      <h2 class="bye">Done for today</h2>
+      <p class="tiny">Signing out stamps your OUT TIME in the sheet.</p>
+      <button class="btn" id="outBtn">Sign out</button>
+    </section>
+  </main>
+</div>
+
+<div id="stamp"><div class="stamp-card">
+  <svg viewBox="0 0 100 100"><circle cx="50" cy="50" r="45"/><path d="M29 51 L44 66 L73 34"/></svg>
+  <span id="emo">💪</span><h3 id="stT"></h3><p id="stS"></p>
+  <button class="btn" id="stX">Back</button>
+</div></div>
+<script src="app.js"></script>
+</body>
+</html>
