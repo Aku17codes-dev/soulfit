@@ -1,0 +1,119 @@
+/**
+ * Akhara backend. Paste over your current script, Save, then:
+ * Deploy > Manage deployments > pencil > Version: New version > Deploy
+ * (same URL keeps working).
+ *
+ * Tabs it uses (created automatically):
+ *   Members     : ID | NAME | CREATED   (existing rows are kept)
+ *   Attendance  : NAME | ID | IN TIME | DATE | DAY | OUT TIME | ROW KEY
+ *   DayMarks    : ID | NAME | DATE | DAY | MARKED AT
+ */
+var TZ = 'Asia/Kolkata', PREFIX = 'GYM-';
+
+function tab_(name, head) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet(), t = ss.getSheetByName(name);
+  if (!t) {
+    t = ss.insertSheet(name);
+    t.appendRow(head);
+    t.getRange(1, 1, 1, head.length).setFontWeight('bold').setBackground('#191410').setFontColor('#FFFFFF');
+    t.setFrozenRows(1);
+  }
+  return t;
+}
+function out_(o) { return ContentService.createTextOutput(JSON.stringify(o)).setMimeType(ContentService.MimeType.JSON); }
+function fmt_(d, f) { return Utilities.formatDate(d, TZ, f); }
+
+/** Find ID and NAME columns by header text, so older sheets still work. */
+function cols_(t) {
+  var h = t.getRange(1, 1, 1, Math.max(t.getLastColumn(), 2)).getValues()[0].map(function (x) { return String(x).toLowerCase(); });
+  var id = 0, nm = 1;
+  h.forEach(function (x, i) { if (x.indexOf('id') > -1 && x.indexOf('name') < 0) id = i; if (x.indexOf('name') > -1) nm = i; });
+  return { id: id, nm: nm };
+}
+function member_(id) {
+  var t = tab_('Members', ['ID', 'NAME', 'CREATED']);
+  if (t.getLastRow() < 2) return null;
+  var c = cols_(t), v = t.getRange(2, 1, t.getLastRow() - 1, t.getLastColumn()).getValues();
+  for (var i = 0; i < v.length; i++) {
+    if (String(v[i][c.id]).trim().toUpperCase() === id) return { id: id, name: String(v[i][c.nm]) };
+  }
+  return null;
+}
+function attRow_(t, rowKey) {
+  if (!rowKey || t.getLastRow() < 2) return -1;
+  var k = t.getRange(2, 7, t.getLastRow() - 1, 1).getValues();
+  for (var i = k.length - 1; i >= 0; i--) if (String(k[i][0]) === String(rowKey)) return i + 2;
+  return -1;
+}
+function marks_(id) {
+  var t = tab_('DayMarks', ['ID', 'NAME', 'DATE', 'DAY', 'MARKED AT']), n = 0, max = 0;
+  if (t.getLastRow() > 1) t.getRange(2, 1, t.getLastRow() - 1, 4).getValues().forEach(function (r) {
+    if (String(r[0]) === id) { n++; max = Math.max(max, Number(r[3]) || 0); }
+  });
+  return { count: n, next: max + 1 };
+}
+
+function doGet() { return out_({ ok: true, message: 'Akhara is live' }); }
+
+function doPost(e) {
+  var p;
+  try { p = JSON.parse(e.postData.contents); } catch (err) { return out_({ ok: false, error: 'Bad request' }); }
+  var lock = LockService.getScriptLock(); lock.waitLock(20000);
+  try {
+    var id = String(p.id || '').trim().toUpperCase(), now = new Date();
+
+    if (p.action === 'register') {
+      var name = String(p.name || '').trim().slice(0, 28);
+      if (name.length < 2) return out_({ ok: false, error: 'Enter a name' });
+      var chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789', nid;
+      do { nid = PREFIX; for (var i = 0; i < 4; i++) nid += chars.charAt(Math.floor(Math.random() * chars.length)); } while (member_(nid));
+      tab_('Members', ['ID', 'NAME', 'CREATED']).appendRow([nid, name, fmt_(now, 'dd MMM yyyy hh:mm a')]);
+      return out_({ ok: true, id: nid, name: name });
+    }
+
+    if (p.action === 'login') {
+      var m = member_(id);
+      if (!m) return out_({ ok: false, error: 'No member with that ID' });
+      var t = tab_('Attendance', ['NAME', 'ID', 'IN TIME', 'DATE', 'DAY', 'OUT TIME', 'ROW KEY']);
+      var key = id + '-' + now.getTime();
+      t.getRange(t.getLastRow() + 1, 1, 1, 7).setNumberFormat('@')
+        .setValues([[m.name, id, fmt_(now, 'hh:mm a'), fmt_(now, 'dd MMM yyyy'), '', '', key]]);
+      t.getRange(t.getLastRow(), 6).setBackground('#FCF0C8');
+      var s = marks_(id);
+      return out_({ ok: true, id: id, name: m.name, rowKey: key, count: s.count, next: s.next });
+    }
+
+    if (p.action === 'mark') {
+      var mm = member_(id);
+      if (!mm) return out_({ ok: false, error: 'Unknown member' });
+      var day = Number(p.day), date = String(p.date || '');
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return out_({ ok: false, error: 'Bad date' });
+      if (!(day >= 1 && day <= 365)) return out_({ ok: false, error: 'Day must be 1 to 365' });
+      if (date > fmt_(now, 'yyyy-MM-dd')) return out_({ ok: false, error: 'You can\'t mark a future date' });
+      var dm = tab_('DayMarks', ['ID', 'NAME', 'DATE', 'DAY', 'MARKED AT']);
+      if (dm.getLastRow() > 1) {
+        var rows = dm.getRange(2, 1, dm.getLastRow() - 1, 3).getValues();
+        for (var j = 0; j < rows.length; j++) {
+          var d = rows[j][2] instanceof Date ? fmt_(rows[j][2], 'yyyy-MM-dd') : String(rows[j][2]).replace(/^'/, '');
+          if (String(rows[j][0]) === id && d === date) return out_({ ok: false, error: 'That date is already marked' });
+        }
+      }
+      var r0 = dm.getLastRow() + 1;
+      dm.getRange(r0, 1, 1, 5).setNumberFormat('@').setValues([[id, mm.name, date, String(day), fmt_(now, 'dd MMM yyyy hh:mm a')]]);
+      var at = tab_('Attendance', ['NAME', 'ID', 'IN TIME', 'DATE', 'DAY', 'OUT TIME', 'ROW KEY']);
+      var ar = attRow_(at, p.rowKey);
+      if (ar > 0) at.getRange(ar, 5).setValue(String(day)).setBackground('#E6F2E6').setFontWeight('bold');
+      return out_({ ok: true, count: marks_(id).count });
+    }
+
+    if (p.action === 'logout') {
+      var ot = tab_('Attendance', ['NAME', 'ID', 'IN TIME', 'DATE', 'DAY', 'OUT TIME', 'ROW KEY']);
+      var or = attRow_(ot, p.rowKey);
+      if (or < 0) return out_({ ok: false, error: 'No open session' });
+      ot.getRange(or, 6).setValue(fmt_(now, 'hh:mm a')).setBackground(null);
+      return out_({ ok: true });
+    }
+
+    return out_({ ok: false, error: 'Unknown action' });
+  } finally { lock.releaseLock(); }
+}
